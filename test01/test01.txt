@@ -1,1 +1,126 @@
-
+DEV DIARY — Floor Plan Wall Detection Pipeline
+First Approach Log
+================================================
+ 
+--- Test 01 ---
+ 
+Started with a scanned architectural floor plan. Single-story house, roughly rectangular,
+with dimension annotations on the left margin: 4.5m, 2m, 3.2m, 0.5m, 0.3m.
+The plan includes furniture symbols, doors, and interior walls. The goal is clear in theory:
+extract wall geometry and feed it into a Blender scene procedurally.
+ 
+First instinct: treat it as a pixel classification problem. Walls are black, background is
+white, everything else is noise. Should be straightforward.
+ 
+It was not straightforward.
+ 
+--- Attempt 1 — Raw threshold ---
+ 
+Applied a strict binary threshold to isolate black pixels. Got walls, yes, but also got
+furniture outlines, hatch patterns, door arcs, stair symbols, dimension lines. Basically
+everything in the drawing that wasn't white came through. The output was unusable as
+geometry — too much noise mixed into what should be clean wall segments.
+ 
+Note to self: need to distinguish between "thick structural walls" and "thin annotation lines."
+Wall thickness in the image is visually significant. Should exploit that.
+ 
+--- Attempt 2 — Thickness-based filtering ---
+ 
+Tried filtering by stroke width. The logic: real walls have a consistent thickness,
+annotation lines and furniture are thinner. Used morphological operations to probe stroke
+widths. Improvement, but still messy. Interior partition walls and outer walls bleed into
+each other. Junction points (T-intersections, corners) create weird blobs.
+ 
+Also noticed at this stage: the image has no consistent pixel-per-meter calibration.
+The dimension annotations are there (4.5m spans a certain pixel range on the left side),
+but I hadn't used them yet. That's a problem I was deferring — mistake.
+ 
+--- Attempt 3 — Grid overlay for calibration ---
+ 
+Decided to tackle the scale problem first before trying to be clever about detection.
+Overlaid a red pixel grid at 25px intervals to manually read off the coordinate system.
+Cross-referenced with the known dimension markers in the image.
+ 
+This produced `plan_with_grid.png` and `plan_grid_precise.png`. Tedious but necessary.
+Now at least I know that the building footprint spans from roughly x=150 to x=975 pixels
+and y=60 to y=590 pixels at the image resolution I'm working with. That gives me an anchor.
+ 
+--- Attempt 4 — Outer perimeter first strategy ---
+ 
+Changed approach. Instead of trying to detect all walls at once, focus only on the outer
+perimeter first. The outer walls are the longest, most continuous black regions and form
+a closed polygon. If I can get those right, interior walls become a secondary problem.
+ 
+Traced the outer boundary manually-assisted: found the four main corner coordinates,
+then let the algorithm walk the perimeter by following connected black pixels.
+ 
+First result: `outer_walls_strict.png`. Green line follows the outer wall but with gaps
+at window openings and door thresholds. The perimeter is broken wherever there's an opening
+in the wall. The line would jump, skip, or drift inward.
+ 
+Not good enough for Blender — I need closed loops, not open chains.
+ 
+--- Attempt 5 — Snapping and gap-closing ---
+ 
+Introduced a snapping step. The idea: after detecting approximate wall centerlines,
+snap all endpoints to a discrete grid aligned to the known real-world dimensions.
+This forces walls to align to a clean coordinate system and closes small gaps.
+ 
+Result: `outer_walls_snapped.png`. Better. The line is more continuous. But new problem —
+the snap grid introduces its own errors. Walls that are slightly diagonal in the original
+drawing get forced onto horizontal/vertical axes, sometimes visibly wrong at corners.
+ 
+The top-left L-shaped notch in the floorplan is a recurring pain point. The algorithm
+keeps misreading the interior step as part of the outer wall or skipping it entirely.
+ 
+--- Attempt 6 — Correction pass ---
+ 
+Added a manual correction layer on top of the snapped result. Identified the problem
+segments (mostly the re-entrant corner on the left side and the notch at the center-top
+where an entry/corridor breaks the top wall) and hardcoded adjusted coordinates for those
+segments only.
+ 
+`outer_walls_corrected.png` — perimeter is now closed and mostly correct.
+The green line traces: top wall (with the central break), right wall, bottom wall, left wall,
+and the interior notch on the top-left. It's not elegant but it works.
+ 
+--- Attempt 7 — Full wall set ---
+ 
+With the outer perimeter working, moved back to the interior walls.
+Tried two strategies in parallel:
+ 
+Strategy A (`all_segs_strict.png`): strict threshold + length filter. Only keep
+detected line segments longer than N pixels. Catches most walls but misses short
+connecting segments and junction connectors.
+ 
+Strategy B (`all_walls_green.png`): looser threshold, then cluster and merge nearby
+parallel segments into single representative lines. More complete coverage, but prone
+to doubling — outer wall gets detected twice (inner face and outer face both come through).
+ 
+Neither is clean on its own. The interior walls around the bathroom cluster (center of plan)
+are particularly problematic — lots of short segments, T-junctions, and the toilet/basin
+fixtures adding visual noise right next to structural walls.
+ 
+--- End of Session Notes ---
+ 
+What I have so far:
+- A calibrated pixel coordinate system with known real-world scale
+- A closed outer perimeter polygon (with manual corrections)
+- Partial interior wall detection (noisy, needs merging logic)
+ 
+What I still need:
+- Clean centerline extraction for ALL walls, deduped
+- Junction point topology (which walls connect to which)
+- Door/window opening positions extracted as gaps in walls
+- Export format compatible with the Blender pipeline
+ 
+The core issue throughout has been that the drawing was made for human reading, not
+machine parsing. Every ambiguity a human resolves visually in a millisecond (is this
+thick line a wall or a heavy furniture outline?) is a genuine algorithmic problem.
+ 
+Next session: look into Hough Line Transform as an alternative to pixel-walking.
+Might get cleaner straight-line extraction directly without the perimeter-tracing approach.
+Also need to start thinking about the Blender side — what data structure does the
+geometry importer actually expect?
+ 
+================================================
